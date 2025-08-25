@@ -1,0 +1,192 @@
+import os
+import numpy as np
+
+from torchvision.utils import save_image
+
+import torch.nn as nn
+import torch
+from mods import *
+from scipy import stats
+import copy
+import math
+
+ldim = 18
+n_imgs = 784 #2**ldim
+n_imgs2 = 784
+img_size = 1*28*28
+img_shape = (1, 28, 28)
+
+    
+class Generator(nn.Module):
+    def __init__(self):
+        super(Generator, self).__init__()
+
+        self.appr1 = Hidden_BlocksS(3, img_size, n_imgs2, img_size)
+        self.appr2 = Hidden_BlocksS(3, img_size, n_imgs2, img_size)
+        self.appr3 = Hidden_BlocksS(3, img_size, n_imgs2, img_size)
+        
+    def train2(self, img):       
+        img1 = self.appr1.train(img)
+        img2 = self.appr2.train(img1.detach())
+        img3 = self.appr3.train(img2.detach())
+        return torch.cat([img1, img2, img3])
+
+    def train(self, img):       
+        img = self.appr1.train(img)
+        #img = self.appr2.train(img)
+        #img = self.appr3.train(img)
+        return img
+    
+    def forward(self, img, nsteps):
+        for i in range(nsteps):
+            img = self.appr1(img)
+            #img = self.appr2(img)
+            #img = self.appr3(img)
+
+        return img
+    
+
+d = "../datasets/hf64_rgb.npy"
+train_imgs2 = get_digits(80)
+train_imgs2 = torch.tensor(train_imgs2).float().reshape(800, img_size)
+train_imgs2 = scale_array(train_imgs2, 0,1,-1,1)
+
+train_imgs = train_imgs2[:n_imgs]
+test_imgs = train_imgs2[n_imgs:]
+
+
+#print(test_imgs.shape)
+save_image(train_imgs[:64].reshape(train_imgs[:64].shape[0], *img_shape), "images/train_imgs.png", nrow=5, normalize=True)
+
+save_image(test_imgs.reshape(test_imgs.shape[0], *img_shape), "images/test_imgs.png", nrow=5, normalize=True)
+
+# Loss function
+loss_func = torch.nn.MSELoss()
+
+# Initialize generator
+generator =  Generator() #torch.load("models/7th_generator") #
+
+# Optimizers
+optim_g = torch.optim.Adam(generator.parameters(), lr = 0.001)
+
+# ----------
+#  Training
+# ----------
+
+def get_in_datal(bs):
+    noise = torch.tensor(np.random.uniform(-1,1,(bs, 784))).float()
+    out_imgs = []
+    for i in range(bs):
+        indcs = np.random.randint(0, n_imgs, n_imgs).tolist()
+        imgs = train_imgs[indcs]
+        img1 = torch.diag(imgs).unsqueeze(0)
+        in_imgs.append(img1)
+    
+    return torch.cat(in_imgs)
+
+
+bs = 64
+
+def get_noise(bs):
+    noises = []
+    imgs = []
+    for i in range(bs):
+        noise = torch.tensor(np.random.uniform(-1,1,(1, 784))).float()
+        diffs = torch.abs(train_imgs - noise)
+        #print(diffs)
+        #print(diffs.shape)
+        losses = torch.sum(diffs, dim =1)
+        idx = torch.argmin(losses)
+        #print(losses)
+        #print(losses.shape); quit()
+        noises.append(noise)
+        imgs.append(train_imgs[idx].unsqueeze(0))
+    noises = torch.cat(noises)
+    imgs = torch.cat(imgs)
+    return noises, imgs
+
+rs_train_imgs = train_imgs.reshape(n_imgs, 1, 28, 28)
+
+
+for epoch in range(100000000):
+    indcs = np.random.randint(0, n_imgs, bs).tolist()
+    cpixels = np.random.choice(784, 100, replace = False).tolist()
+
+    in_imgs = train_imgs[indcs]
+    #in_imgs[:, cpixels] = 0
+    noise = torch.tensor(np.random.uniform(0, 1, (64, 784))).float()
+    noise[:, cpixels] = in_imgs[:, cpixels]
+    in_imgs = noise
+    out_imgs = compare_images(in_imgs, train_imgs)
+    
+
+    optim_g.zero_grad()
+    rtimgs1 = generator.train(in_imgs)
+    r_loss1 = loss_func(rtimgs1, out_imgs)
+    r_loss1.backward()
+    optim_g.step()
+
+    '''
+    optim_g.zero_grad()
+    rtimgs = generator.train(out_imgs)
+    r_loss = loss_func(rtimgs, out_imgs)
+    r_loss.backward()
+    optim_g.step()
+    '''
+
+    if epoch % 1000 == 0:
+        rtimgs = torch.cat([rtimgs1]) #rtimgs2
+        out_imgs = torch.cat([out_imgs])
+        in_imgs = torch.cat([in_imgs])
+        losses = [r_loss1.item()] # r_loss2.item()
+
+        Printer(f"{epoch = },  {losses = }") #{g_loss.item() = },
+
+        save_image(out_imgs.reshape(out_imgs.shape[0], *img_shape), "images/out_imgs.png", nrow=5, normalize=True)
+        save_image(rtimgs.reshape(rtimgs.shape[0], *img_shape), "images/rtimgs.png", nrow=5, normalize=True)
+        save_image(in_imgs.reshape(in_imgs.shape[0], *(1,28,28)), "images/in_imgs.png", nrow=5, normalize=True)
+
+        noise_zs = torch.tensor(np.random.uniform(0, 1, (64,784))).float()
+        recr_noise_imgs = generator(noise_zs, 1)
+        save_image(recr_noise_imgs[:64].reshape(recr_noise_imgs[:64].shape[0], *img_shape), "images/step1_g_noise_imgs.png", nrow=5, normalize=True)
+
+        noise_zs = torch.tensor(np.random.uniform(0, 1, (64,784))).float()
+        recr_noise_imgs = generator(noise_zs, 9)
+        save_image(recr_noise_imgs[:64].reshape(recr_noise_imgs[:64].shape[0], *img_shape), "images/step9_g_noise_imgs.png", nrow=5, normalize=True)
+        
+        noise_zs = switch_tiles(out_imgs.reshape(out_imgs.shape[0],1,28,28),(1,1))[:64]
+        noise_zs = torch.tensor(noise_zs).float().reshape(64,784)
+        recr_noise_imgs = generator(noise_zs, 1)
+        save_image(recr_noise_imgs[:64].reshape(recr_noise_imgs[:64].shape[0], *img_shape), "images/step20_g_noise_imgs.png", nrow=5, normalize=True)
+
+        recr_noise_imgs = generator(test_imgs, 1)
+        save_image(recr_noise_imgs[:64].reshape(recr_noise_imgs[:64].shape[0], *img_shape), "images/rtest_imgs.png", nrow=5, normalize=True)
+
+        recr_noise_imgs = generator(test_imgs, 10)
+        save_image(recr_noise_imgs[:64].reshape(recr_noise_imgs[:64].shape[0], *img_shape), "images/step10_rtest_imgs.png", nrow=5, normalize=True)
+
+        recr_noise_imgs = generator(train_imgs[indcs], 1)
+        save_image(recr_noise_imgs[:64].reshape(recr_noise_imgs[:64].shape[0], *img_shape), "images/n_rtimgs.png", nrow=5, normalize=True)
+
+        recr_noise_imgs = generator(out_imgs, 1)
+        save_image(recr_noise_imgs[:64].reshape(recr_noise_imgs[:64].shape[0], *img_shape), "images/r_out_imgs.png", nrow=5, normalize=True)
+
+        i1 = np.random.randint(0, n_imgs, 2).tolist()
+        l = 4
+        z1 = train_imgs[i1[0]]
+        z2 = train_imgs[i1[1]]
+        zs = []
+        for i in range(l+1):
+            a = (i/l)
+            z = (1-a)*z1 + a*z2
+            zs.append(z.numpy())
+        zs = torch.tensor(np.array(zs)).float()
+        bimg = generator(zs, 1)
+        save_image(bimg.reshape(5, *img_shape), f"images/bimg.png", nrow=5, normalize=True)
+
+        #quit()
+        torch.save(generator, "models/7th_generator")
+
+        
+        
+
